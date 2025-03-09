@@ -19,6 +19,23 @@ const (
 	tileSize     = 32
 )
 
+// Tile type constants
+const (
+	TileGrass = iota
+	TilePath
+	TileWater
+	TileBridge
+	TileMountain
+)
+
+// Layer constants
+const (
+	LayerBase = iota
+	LayerOverlay
+	LayerObjects
+	LayerCount
+)
+
 // Game state constants
 const (
 	StateOverworld = iota
@@ -61,14 +78,19 @@ type Player struct {
 	movementState int
 	direction     int
 	frameCount    int
+	// Layer the player is currently on (for bridges, etc.)
+	currentLayer int
 }
 
 // Map represents the game world
 type Map struct {
-	tiles      [][]int
-	width      int
-	height     int
-	grassTiles map[string]bool
+	tiles       [LayerCount][][]int
+	width       int
+	height      int
+	grassTiles  map[string]bool
+	bridgeTiles map[string]bool
+	// Add collision map
+	collisionMap map[string]bool
 }
 
 // Battle represents a battle state
@@ -115,6 +137,7 @@ func NewGame() *Game {
 			visualY:       float32(5 * tileSize),
 			movementState: MovementIdle,
 			direction:     DirectionDown,
+			currentLayer:  LayerBase,
 		},
 		gameState:     StateOverworld,
 		encounterRate: 0.02,
@@ -176,40 +199,109 @@ func NewGame() *Game {
 	// Initialize the player's starter creature
 	game.battle.playerCreature = game.creatures[0]
 
-	// Create a simple map
+	// Create a map with layers
 	game.initMap()
 
 	return game
 }
 
-// Initialize a simple tile map
+// Initialize a map with layers, including bridges over water
 func (g *Game) initMap() {
 	width, height := 20, 15
 	g.worldMap = Map{
-		tiles:      make([][]int, height),
-		width:      width,
-		height:     height,
-		grassTiles: make(map[string]bool),
+		// tiles:        make([][][]int, LayerCount),
+		width:        width,
+		height:       height,
+		grassTiles:   make(map[string]bool),
+		bridgeTiles:  make(map[string]bool),
+		collisionMap: make(map[string]bool),
 	}
 
-	// Generate a simple map with grass and path
-	for y := range height {
-		g.worldMap.tiles[y] = make([]int, width)
-		for x := range width {
-			// 0 = path, 1 = grass
-			if rand.Float32() < 0.7 {
-				g.worldMap.tiles[y][x] = 1
+	// Initialize layers
+	for layer := 0; layer < LayerCount; layer++ {
+		g.worldMap.tiles[layer] = make([][]int, height)
+		for y := 0; y < height; y++ {
+			g.worldMap.tiles[layer][y] = make([]int, width)
+		}
+	}
+
+	// Generate base layer with grass, paths, and water
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			// Main landscape features
+			var tileType int
+			randVal := rand.Float32()
+
+			if randVal < 0.6 {
+				tileType = TileGrass
 				// Mark as grass tile for encounter checks
 				key := formatCoord(x, y)
 				g.worldMap.grassTiles[key] = true
+			} else if randVal < 0.85 {
+				tileType = TilePath
 			} else {
-				g.worldMap.tiles[y][x] = 0
+				tileType = TileWater
+				// Add water to collision map
+				key := formatCoord(x, y)
+				g.worldMap.collisionMap[key] = true
 			}
+
+			g.worldMap.tiles[LayerBase][y][x] = tileType
+		}
+	}
+
+	// Add mountains (impassable)
+	for i := 0; i < width*height/20; i++ {
+		mountainX := rand.Intn(width-2) + 1
+		mountainY := rand.Intn(height-2) + 1
+
+		// Create small mountain clusters
+		for dy := -1; dy <= 1; dy++ {
+			for dx := -1; dx <= 1; dx++ {
+				if rand.Float32() < 0.7 {
+					nx, ny := mountainX+dx, mountainY+dy
+					if nx >= 0 && nx < width && ny >= 0 && ny < height {
+						g.worldMap.tiles[LayerBase][ny][nx] = TileMountain
+						// Add mountain to collision map
+						key := formatCoord(nx, ny)
+						g.worldMap.collisionMap[key] = true
+					}
+				}
+			}
+		}
+	}
+
+	// Add bridges over water
+	// Horizontal bridge
+	bridgeX, bridgeY := width/2-3, height/2
+	for i := 0; i < 6; i++ {
+		x := bridgeX + i
+		// Make sure we're building bridge over water
+		if g.worldMap.tiles[LayerBase][bridgeY][x] == TileWater {
+			g.worldMap.tiles[LayerOverlay][bridgeY][x] = TileBridge
+			key := formatCoord(x, bridgeY)
+			g.worldMap.bridgeTiles[key] = true
+			// Remove from collision map since bridge is passable
+			delete(g.worldMap.collisionMap, key)
+		}
+	}
+
+	// Vertical bridge
+	bridgeX, bridgeY = width/4, height/2-3
+	for i := 0; i < 6; i++ {
+		y := bridgeY + i
+		// Make sure we're building bridge over water
+		if y < height && g.worldMap.tiles[LayerBase][y][bridgeX] == TileWater {
+			g.worldMap.tiles[LayerOverlay][y][bridgeX] = TileBridge
+			key := formatCoord(bridgeX, y)
+			g.worldMap.bridgeTiles[key] = true
+			// Remove from collision map since bridge is passable
+			delete(g.worldMap.collisionMap, key)
 		}
 	}
 }
 
-// Helper function to format coordinates for the grass tiles map
+// Helper function to format coordinates for the various tile maps
 func formatCoord(x, y int) string {
 	return string(rune(x)) + "," + string(rune(y))
 }
@@ -230,43 +322,15 @@ func (g *Game) updateOverworld() {
 	// Handle movement based on the current state
 	switch g.player.movementState {
 	case MovementIdle:
-		// Player is not moving, check for input
-		if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
-			g.player.direction = DirectionUp
-			// Check if we can move to the target tile
-			if g.player.tileY > 0 {
-				g.player.tileY--
-				g.player.movementState = MovementMoving
-			}
-		} else if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
-			g.player.direction = DirectionDown
-			// Check if we can move to the target tile
-			if g.player.tileY < g.worldMap.height-1 {
-				g.player.tileY++
-				g.player.movementState = MovementMoving
-			}
-		} else if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
-			g.player.direction = DirectionLeft
-			// Check if we can move to the target tile
-			if g.player.tileX > 0 {
-				g.player.tileX--
-				g.player.movementState = MovementMoving
-			}
-		} else if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
-			g.player.direction = DirectionRight
-			// Check if we can move to the target tile
-			if g.player.tileX < g.worldMap.width-1 {
-				g.player.tileX++
-				g.player.movementState = MovementMoving
-			}
-		}
+		// Check for key presses for continuous movement
+		g.handlePlayerMovement()
 
 	case MovementMoving:
 		// Update visual position to smoothly move toward the target tile
 		targetX := float32(g.player.tileX * tileSize)
 		targetY := float32(g.player.tileY * tileSize)
 
-		// Calculate how fast to move (adjust the divisor to change speed)
+		// Calculate how fast to move
 		const movementSpeed = 4.0
 
 		// Update visual position
@@ -301,13 +365,75 @@ func (g *Game) updateOverworld() {
 		if g.player.visualX == targetX && g.player.visualY == targetY {
 			g.player.movementState = MovementIdle
 
-			// Check for wild creature encounters in grass when arriving at a new tile
+			// Check for bridge tiles and adjust player layer
 			key := formatCoord(g.player.tileX, g.player.tileY)
-			if g.worldMap.grassTiles[key] && rand.Float32() < g.encounterRate {
+			if g.worldMap.bridgeTiles[key] {
+				g.player.currentLayer = LayerOverlay
+			} else {
+				g.player.currentLayer = LayerBase
+			}
+
+			// Check for wild creature encounters in grass when arriving at a new tile
+			if g.worldMap.grassTiles[key] && g.player.currentLayer == LayerBase && rand.Float32() < g.encounterRate {
 				g.startBattle()
 			}
+
+			// Continue movement if key is still held (for continuous movement)
+			g.handlePlayerMovement()
 		}
 	}
+}
+
+// handlePlayerMovement processes player movement input
+func (g *Game) handlePlayerMovement() {
+	// Variable to track if we've started movement
+	moved := false
+
+	// Handle arrow keys for movement
+	if ebiten.IsKeyPressed(ebiten.KeyUp) {
+		g.player.direction = DirectionUp
+		// Check if we can move to the target tile
+		newY := g.player.tileY - 1
+		if newY >= 0 && !g.isCollision(g.player.tileX, newY) {
+			g.player.tileY = newY
+			moved = true
+		}
+	} else if ebiten.IsKeyPressed(ebiten.KeyDown) {
+		g.player.direction = DirectionDown
+		// Check if we can move to the target tile
+		newY := g.player.tileY + 1
+		if newY < g.worldMap.height && !g.isCollision(g.player.tileX, newY) {
+			g.player.tileY = newY
+			moved = true
+		}
+	} else if ebiten.IsKeyPressed(ebiten.KeyLeft) {
+		g.player.direction = DirectionLeft
+		// Check if we can move to the target tile
+		newX := g.player.tileX - 1
+		if newX >= 0 && !g.isCollision(newX, g.player.tileY) {
+			g.player.tileX = newX
+			moved = true
+		}
+	} else if ebiten.IsKeyPressed(ebiten.KeyRight) {
+		g.player.direction = DirectionRight
+		// Check if we can move to the target tile
+		newX := g.player.tileX + 1
+		if newX < g.worldMap.width && !g.isCollision(newX, g.player.tileY) {
+			g.player.tileX = newX
+			moved = true
+		}
+	}
+
+	// If we moved, update the movement state
+	if moved {
+		g.player.movementState = MovementMoving
+	}
+}
+
+// isCollision checks if a tile is impassable
+func (g *Game) isCollision(x, y int) bool {
+	key := formatCoord(x, y)
+	return g.worldMap.collisionMap[key]
 }
 
 // Start a battle with a random wild creature
@@ -431,19 +557,11 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 // drawOverworld draws the overworld map and player
 func (g *Game) drawOverworld(screen *ebiten.Image) {
-	// Draw the map
-	for y := range g.worldMap.height {
-		for x := range g.worldMap.width {
-			tile := g.worldMap.tiles[y][x]
-			if tile == 0 {
-				// Path tile (brown)
-				vector.DrawFilledRect(screen, float32(x*tileSize), float32(y*tileSize), tileSize, tileSize, color.RGBA{210, 180, 140, 255}, true)
-			} else {
-				// Grass tile (green)
-				vector.DrawFilledRect(screen, float32(x*tileSize), float32(y*tileSize), tileSize, tileSize, color.RGBA{34, 139, 34, 255}, true)
-			}
-		}
-	}
+	// Draw the base layer first
+	g.drawMapLayer(screen, LayerBase)
+
+	// Draw the overlay layer (bridges, etc.)
+	g.drawMapLayer(screen, LayerOverlay)
 
 	// Draw the player at visual position (for smooth movement)
 	playerColor := color.RGBA{255, 0, 0, 255}
@@ -495,11 +613,45 @@ func (g *Game) drawOverworld(screen *ebiten.Image) {
 		)
 	}
 
+	// Draw the object layer (if needed)
+	// g.drawMapLayer(screen, LayerObjects)
+
 	// Debug info (optional)
 	// op := &text.DrawOptions{}
 	// op.GeoM.Translate(10, 10)
 	// op.ColorScale.ScaleWithColor(color.White)
-	// text.Draw(screen, fmt.Sprintf("Tile: %d,%d", g.player.tileX, g.player.tileY), g.fontFace, op)
+	// text.Draw(screen, fmt.Sprintf("Tile: %d,%d Layer: %d", g.player.tileX, g.player.tileY, g.player.currentLayer), g.fontFace, op)
+}
+
+// drawMapLayer draws a specific layer of the map
+func (g *Game) drawMapLayer(screen *ebiten.Image, layer int) {
+	for y := 0; y < g.worldMap.height; y++ {
+		for x := 0; x < g.worldMap.width; x++ {
+			tile := g.worldMap.tiles[layer][y][x]
+			if tile == 0 && layer == LayerBase {
+				continue // Skip empty tiles in overlay layers
+			}
+
+			var tileColor color.RGBA
+
+			switch tile {
+			case TileGrass:
+				tileColor = color.RGBA{34, 139, 34, 255} // Green
+			case TilePath:
+				tileColor = color.RGBA{210, 180, 140, 255} // Brown
+			case TileWater:
+				tileColor = color.RGBA{30, 144, 255, 255} // Blue
+			case TileBridge:
+				tileColor = color.RGBA{139, 69, 19, 255} // Dark brown
+			case TileMountain:
+				tileColor = color.RGBA{105, 105, 105, 255} // Dark grey
+			default:
+				continue // Skip drawing if empty
+			}
+
+			vector.DrawFilledRect(screen, float32(x*tileSize), float32(y*tileSize), tileSize, tileSize, tileColor, true)
+		}
+	}
 }
 
 // drawBattle draws the battle screen
