@@ -1,6 +1,9 @@
 package main
 
-import "github.com/hajimehoshi/ebiten/v2"
+import (
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+)
 
 // Movement states for tile-based movement
 const (
@@ -66,6 +69,14 @@ func (g *Game) updateCamera() {
 func (g *Game) handlePlayerMovement() {
 	// Variable to track if we've started movement
 	moved := false
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyC) {
+		g.gameState = StateCreatureMenu
+		g.menuSection = 0
+		g.selectedOption = 0
+		g.selectedCreature = 0
+		return
+	}
 
 	// Handle arrow keys for movement
 	if ebiten.IsKeyPressed(ebiten.KeyUp) {

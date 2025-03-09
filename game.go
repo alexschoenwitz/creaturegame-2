@@ -14,21 +14,26 @@ const (
 	StateOverworld
 	StateBattle
 	StateMenu
+	StateCreatureMenu
 )
 
 // Game is the main game struct
 type Game struct {
-	player          Player
-	gameState       int
-	worldMap        Map
-	battle          Battle
-	encounterRate   float32
-	creatures       []Creature
-	fontFace        text.Face
-	camera          Camera
-	menuOptions     []string
-	selectedOption  int
-	gameInitialized bool
+	player              Player
+	gameState           int
+	worldMap            Map
+	battle              Battle
+	encounterRate       float32
+	creatures           []Creature
+	fontFace            text.Face
+	camera              Camera
+	menuOptions         []string
+	selectedOption      int
+	gameInitialized     bool
+	creatureMenuOptions []string
+	selectedCreature    int
+	menuSection         int // 0 for creature list, 1 for creature details
+	detailMenuOptions   []string
 }
 
 // NewGame creates a new game instance
@@ -50,9 +55,13 @@ func NewGame() *Game {
 			x: 0,
 			y: 0,
 		},
-		menuOptions:     []string{"New Game", "Options", "Exit"},
-		selectedOption:  0,
-		gameInitialized: false,
+		menuOptions:         []string{"New Game", "Options", "Exit"},
+		selectedOption:      0,
+		gameInitialized:     false,
+		creatureMenuOptions: []string{"View Stats", "Switch Order", "Back to Game"},
+		selectedCreature:    0,
+		menuSection:         0,
+		detailMenuOptions:   []string{"Summary", "Moves", "Back"},
 	}
 
 	game.initGame()
@@ -140,6 +149,8 @@ func (g *Game) Update() error {
 		g.updateOverworld()
 	case StateBattle:
 		g.updateBattle()
+	case StateCreatureMenu:
+		g.updateCreatureMenu()
 	}
 	return nil
 }
@@ -156,6 +167,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		g.drawOverworld(screen)
 	case StateBattle:
 		g.drawBattle(screen)
+	case StateCreatureMenu:
+		g.drawCreatureMenu(screen)
 	}
 }
 
