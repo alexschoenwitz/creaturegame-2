@@ -17,7 +17,6 @@ const (
 	screenWidth  = 320
 	screenHeight = 240
 	tileSize     = 32
-	playerSpeed  = 2
 )
 
 // Game state constants
@@ -25,6 +24,20 @@ const (
 	StateOverworld = iota
 	StateBattle
 	StateMenu
+)
+
+// Movement states for tile-based movement
+const (
+	MovementIdle = iota
+	MovementMoving
+)
+
+// Direction constants
+const (
+	DirectionUp = iota
+	DirectionDown
+	DirectionLeft
+	DirectionRight
 )
 
 // Game is the main game struct
@@ -40,10 +53,14 @@ type Game struct {
 
 // Player represents the player's character
 type Player struct {
-	x, y       float32
-	frameCount int
-	direction  int
-	moving     bool
+	// Current position in tiles
+	tileX, tileY int
+	// Visual position in pixels for smooth movement
+	visualX, visualY float32
+	// Movement state tracking
+	movementState int
+	direction     int
+	frameCount    int
 }
 
 // Map represents the game world
@@ -92,10 +109,12 @@ type Move struct {
 func NewGame() *Game {
 	game := &Game{
 		player: Player{
-			x:         float32(screenWidth) / 2,
-			y:         float32(screenHeight) / 2,
-			moving:    false,
-			direction: 0,
+			tileX:         5,
+			tileY:         5,
+			visualX:       float32(5 * tileSize),
+			visualY:       float32(5 * tileSize),
+			movementState: MovementIdle,
+			direction:     DirectionDown,
 		},
 		gameState:     StateOverworld,
 		encounterRate: 0.02,
@@ -208,55 +227,85 @@ func (g *Game) Update() error {
 
 // updateOverworld handles overworld state updates
 func (g *Game) updateOverworld() {
-	// Movement
-	g.player.moving = false
-	var dx, dy float32 = 0, 0
+	// Handle movement based on the current state
+	switch g.player.movementState {
+	case MovementIdle:
+		// Player is not moving, check for input
+		if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
+			g.player.direction = DirectionUp
+			// Check if we can move to the target tile
+			if g.player.tileY > 0 {
+				g.player.tileY--
+				g.player.movementState = MovementMoving
+			}
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
+			g.player.direction = DirectionDown
+			// Check if we can move to the target tile
+			if g.player.tileY < g.worldMap.height-1 {
+				g.player.tileY++
+				g.player.movementState = MovementMoving
+			}
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
+			g.player.direction = DirectionLeft
+			// Check if we can move to the target tile
+			if g.player.tileX > 0 {
+				g.player.tileX--
+				g.player.movementState = MovementMoving
+			}
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
+			g.player.direction = DirectionRight
+			// Check if we can move to the target tile
+			if g.player.tileX < g.worldMap.width-1 {
+				g.player.tileX++
+				g.player.movementState = MovementMoving
+			}
+		}
 
-	if ebiten.IsKeyPressed(ebiten.KeyUp) {
-		dy = -playerSpeed
-		g.player.direction = 0
-		g.player.moving = true
-	} else if ebiten.IsKeyPressed(ebiten.KeyDown) {
-		dy = playerSpeed
-		g.player.direction = 1
-		g.player.moving = true
-	} else if ebiten.IsKeyPressed(ebiten.KeyLeft) {
-		dx = -playerSpeed
-		g.player.direction = 2
-		g.player.moving = true
-	} else if ebiten.IsKeyPressed(ebiten.KeyRight) {
-		dx = playerSpeed
-		g.player.direction = 3
-		g.player.moving = true
-	}
+	case MovementMoving:
+		// Update visual position to smoothly move toward the target tile
+		targetX := float32(g.player.tileX * tileSize)
+		targetY := float32(g.player.tileY * tileSize)
 
-	// Update player position
-	if g.player.moving {
-		g.player.x += dx
-		g.player.y += dy
+		// Calculate how fast to move (adjust the divisor to change speed)
+		const movementSpeed = 4.0
+
+		// Update visual position
+		if g.player.visualX < targetX {
+			g.player.visualX += movementSpeed
+			if g.player.visualX > targetX {
+				g.player.visualX = targetX
+			}
+		} else if g.player.visualX > targetX {
+			g.player.visualX -= movementSpeed
+			if g.player.visualX < targetX {
+				g.player.visualX = targetX
+			}
+		}
+
+		if g.player.visualY < targetY {
+			g.player.visualY += movementSpeed
+			if g.player.visualY > targetY {
+				g.player.visualY = targetY
+			}
+		} else if g.player.visualY > targetY {
+			g.player.visualY -= movementSpeed
+			if g.player.visualY < targetY {
+				g.player.visualY = targetY
+			}
+		}
+
+		// Animation frame count
 		g.player.frameCount++
 
-		// Boundary checks
-		if g.player.x < 0 {
-			g.player.x = 0
-		}
-		if g.player.x > float32(g.worldMap.width*tileSize-tileSize) {
-			g.player.x = float32(g.worldMap.width*tileSize - tileSize)
-		}
-		if g.player.y < 0 {
-			g.player.y = 0
-		}
-		if g.player.y > float32(g.worldMap.height*tileSize-tileSize) {
-			g.player.y = float32(g.worldMap.height*tileSize - tileSize)
-		}
+		// Check if movement is complete
+		if g.player.visualX == targetX && g.player.visualY == targetY {
+			g.player.movementState = MovementIdle
 
-		// Check for wild creature encounters in grass
-		tileX := int(g.player.x) / tileSize
-		tileY := int(g.player.y) / tileSize
-
-		key := formatCoord(tileX, tileY)
-		if g.worldMap.grassTiles[key] && rand.Float32() < g.encounterRate {
-			g.startBattle()
+			// Check for wild creature encounters in grass when arriving at a new tile
+			key := formatCoord(g.player.tileX, g.player.tileY)
+			if g.worldMap.grassTiles[key] && rand.Float32() < g.encounterRate {
+				g.startBattle()
+			}
 		}
 	}
 }
@@ -396,55 +445,61 @@ func (g *Game) drawOverworld(screen *ebiten.Image) {
 		}
 	}
 
-	// Draw the player
+	// Draw the player at visual position (for smooth movement)
 	playerColor := color.RGBA{255, 0, 0, 255}
-	vector.DrawFilledRect(screen, g.player.x, g.player.y, tileSize, tileSize, playerColor, true)
+	vector.DrawFilledRect(screen, g.player.visualX, g.player.visualY, tileSize, tileSize, playerColor, true)
 
-	// Draw player direction indicator using rectangles instead of triangles
+	// Draw player direction indicator
 	indicatorSize := tileSize / 4
 
 	switch g.player.direction {
-	case 0: // Up
+	case DirectionUp: // Up
 		vector.DrawFilledRect(
 			screen,
-			g.player.x+float32(tileSize/2-indicatorSize/2),
-			g.player.y,
+			g.player.visualX+float32(tileSize/2-indicatorSize/2),
+			g.player.visualY,
 			float32(indicatorSize),
 			float32(indicatorSize),
 			color.White,
 			true,
 		)
-	case 1: // Down
+	case DirectionDown: // Down
 		vector.DrawFilledRect(
 			screen,
-			g.player.x+float32(tileSize/2-indicatorSize/2),
-			g.player.y+float32(tileSize-indicatorSize),
+			g.player.visualX+float32(tileSize/2-indicatorSize/2),
+			g.player.visualY+float32(tileSize-indicatorSize),
 			float32(indicatorSize),
 			float32(indicatorSize),
 			color.White,
 			true,
 		)
-	case 2: // Left
+	case DirectionLeft: // Left
 		vector.DrawFilledRect(
 			screen,
-			g.player.x,
-			g.player.y+float32(tileSize/2-indicatorSize/2),
+			g.player.visualX,
+			g.player.visualY+float32(tileSize/2-indicatorSize/2),
 			float32(indicatorSize),
 			float32(indicatorSize),
 			color.White,
 			true,
 		)
-	case 3: // Right
+	case DirectionRight: // Right
 		vector.DrawFilledRect(
 			screen,
-			g.player.x+float32(tileSize-indicatorSize),
-			g.player.y+float32(tileSize/2-indicatorSize/2),
+			g.player.visualX+float32(tileSize-indicatorSize),
+			g.player.visualY+float32(tileSize/2-indicatorSize/2),
 			float32(indicatorSize),
 			float32(indicatorSize),
 			color.White,
 			true,
 		)
 	}
+
+	// Debug info (optional)
+	// op := &text.DrawOptions{}
+	// op.GeoM.Translate(10, 10)
+	// op.ColorScale.ScaleWithColor(color.White)
+	// text.Draw(screen, fmt.Sprintf("Tile: %d,%d", g.player.tileX, g.player.tileY), g.fontFace, op)
 }
 
 // drawBattle draws the battle screen
@@ -478,7 +533,7 @@ func (g *Game) drawBattle(screen *ebiten.Image) {
 		op := &text.DrawOptions{}
 		op.GeoM.Translate(10, float64(screenHeight-50))
 		op.ColorScale.ScaleWithColor(color.White)
-		text.Draw(screen, g.battle.battleText, g.fontFace, op)
+		text.Draw(screen, "What will "+g.battle.playerCreature.name+" do?", g.fontFace, op)
 
 		// Draw move options
 		for i, move := range g.battle.playerCreature.moves {
@@ -510,7 +565,7 @@ func (g *Game) drawBattle(screen *ebiten.Image) {
 	}
 	vector.DrawFilledRect(screen, float32(enemyX), float32(enemyY-15), float32(enemySize)*hpRatio, 5, hpColor, true)
 	op := &text.DrawOptions{}
-	op.GeoM.Translate(float64(enemyX), float64(enemyY-20))
+	op.GeoM.Translate(float64(enemyX), float64(enemyY-25))
 	op.ColorScale.ScaleWithColor(color.White)
 	text.Draw(screen, g.battle.enemyCreature.name+" Lv."+string(rune(g.battle.enemyCreature.level+'0')), g.fontFace, op)
 
@@ -526,7 +581,7 @@ func (g *Game) drawBattle(screen *ebiten.Image) {
 	}
 	vector.DrawFilledRect(screen, float32(playerX), float32(playerY-15), float32(playerSize)*hpRatio, 5, hpColor, true)
 	op2 := &text.DrawOptions{}
-	op2.GeoM.Translate(float64(playerX), float64(playerY-20))
+	op2.GeoM.Translate(float64(playerX), float64(playerY-25))
 	op2.ColorScale.ScaleWithColor(color.White)
 	text.Draw(screen, g.battle.playerCreature.name+" Lv."+string(rune(g.battle.playerCreature.level+'0')), g.fontFace, op2)
 }
