@@ -66,6 +66,12 @@ type Game struct {
 	encounterRate float32
 	creatures     []Creature
 	fontFace      text.Face
+	camera        Camera // Added camera field
+}
+
+// Camera tracks the viewport
+type Camera struct {
+	x, y float32
 }
 
 // Player represents the player's character
@@ -142,6 +148,10 @@ func NewGame() *Game {
 		gameState:     StateOverworld,
 		encounterRate: 0.02,
 		fontFace:      text.NewGoXFace(basicfont.Face7x13),
+		camera: Camera{ // Initialize camera position
+			x: 0,
+			y: 0,
+		},
 	}
 
 	// Create some creatures
@@ -201,6 +211,9 @@ func NewGame() *Game {
 
 	// Create a map with layers
 	game.initMap()
+
+	// Initialize camera to center on player
+	game.updateCamera()
 
 	return game
 }
@@ -317,6 +330,33 @@ func (g *Game) Update() error {
 	return nil
 }
 
+// updateCamera centers the camera on the player with smooth movement
+func (g *Game) updateCamera() {
+	// Calculate the target camera position (centered on player)
+	targetX := g.player.visualX - screenWidth/2 + tileSize/2
+	targetY := g.player.visualY - screenHeight/2 + tileSize/2
+
+	// Smoothly move camera towards target (can adjust the 0.1 for different smoothing)
+	g.camera.x += (targetX - g.camera.x) * 0.1
+	g.camera.y += (targetY - g.camera.y) * 0.1
+
+	// Clamp camera to map bounds
+	if g.camera.x < 0 {
+		g.camera.x = 0
+	}
+	if g.camera.y < 0 {
+		g.camera.y = 0
+	}
+	maxX := float32(g.worldMap.width*tileSize) - screenWidth
+	maxY := float32(g.worldMap.height*tileSize) - screenHeight
+	if g.camera.x > maxX {
+		g.camera.x = maxX
+	}
+	if g.camera.y > maxY {
+		g.camera.y = maxY
+	}
+}
+
 // updateOverworld handles overworld state updates
 func (g *Game) updateOverworld() {
 	// Handle movement based on the current state
@@ -382,6 +422,9 @@ func (g *Game) updateOverworld() {
 			g.handlePlayerMovement()
 		}
 	}
+
+	// Update camera position to follow player
+	g.updateCamera()
 }
 
 // handlePlayerMovement processes player movement input
@@ -565,7 +608,15 @@ func (g *Game) drawOverworld(screen *ebiten.Image) {
 
 	// Draw the player at visual position (for smooth movement)
 	playerColor := color.RGBA{255, 0, 0, 255}
-	vector.DrawFilledRect(screen, g.player.visualX, g.player.visualY, tileSize, tileSize, playerColor, true)
+	vector.DrawFilledRect(
+		screen,
+		g.player.visualX-g.camera.x,
+		g.player.visualY-g.camera.y,
+		tileSize,
+		tileSize,
+		playerColor,
+		true,
+	)
 
 	// Draw player direction indicator
 	indicatorSize := tileSize / 4
@@ -574,8 +625,8 @@ func (g *Game) drawOverworld(screen *ebiten.Image) {
 	case DirectionUp: // Up
 		vector.DrawFilledRect(
 			screen,
-			g.player.visualX+float32(tileSize/2-indicatorSize/2),
-			g.player.visualY,
+			g.player.visualX-g.camera.x+float32(tileSize/2-indicatorSize/2),
+			g.player.visualY-g.camera.y,
 			float32(indicatorSize),
 			float32(indicatorSize),
 			color.White,
@@ -584,8 +635,8 @@ func (g *Game) drawOverworld(screen *ebiten.Image) {
 	case DirectionDown: // Down
 		vector.DrawFilledRect(
 			screen,
-			g.player.visualX+float32(tileSize/2-indicatorSize/2),
-			g.player.visualY+float32(tileSize-indicatorSize),
+			g.player.visualX-g.camera.x+float32(tileSize/2-indicatorSize/2),
+			g.player.visualY-g.camera.y+float32(tileSize-indicatorSize),
 			float32(indicatorSize),
 			float32(indicatorSize),
 			color.White,
@@ -594,8 +645,8 @@ func (g *Game) drawOverworld(screen *ebiten.Image) {
 	case DirectionLeft: // Left
 		vector.DrawFilledRect(
 			screen,
-			g.player.visualX,
-			g.player.visualY+float32(tileSize/2-indicatorSize/2),
+			g.player.visualX-g.camera.x,
+			g.player.visualY-g.camera.y+float32(tileSize/2-indicatorSize/2),
 			float32(indicatorSize),
 			float32(indicatorSize),
 			color.White,
@@ -604,17 +655,14 @@ func (g *Game) drawOverworld(screen *ebiten.Image) {
 	case DirectionRight: // Right
 		vector.DrawFilledRect(
 			screen,
-			g.player.visualX+float32(tileSize-indicatorSize),
-			g.player.visualY+float32(tileSize/2-indicatorSize/2),
+			g.player.visualX-g.camera.x+float32(tileSize-indicatorSize),
+			g.player.visualY-g.camera.y+float32(tileSize/2-indicatorSize/2),
 			float32(indicatorSize),
 			float32(indicatorSize),
 			color.White,
 			true,
 		)
 	}
-
-	// Draw the object layer (if needed)
-	// g.drawMapLayer(screen, LayerObjects)
 
 	// Debug info (optional)
 	// op := &text.DrawOptions{}
@@ -625,10 +673,31 @@ func (g *Game) drawOverworld(screen *ebiten.Image) {
 
 // drawMapLayer draws a specific layer of the map
 func (g *Game) drawMapLayer(screen *ebiten.Image, layer int) {
-	for y := 0; y < g.worldMap.height; y++ {
-		for x := 0; x < g.worldMap.width; x++ {
+	// Calculate visible tile range based on camera position
+	startX := int(g.camera.x) / tileSize
+	startY := int(g.camera.y) / tileSize
+	endX := startX + screenWidth/tileSize + 2 // +2 to handle partially visible tiles
+	endY := startY + screenHeight/tileSize + 2
+
+	// Clamp to map bounds
+	if startX < 0 {
+		startX = 0
+	}
+	if startY < 0 {
+		startY = 0
+	}
+	if endX > g.worldMap.width {
+		endX = g.worldMap.width
+	}
+	if endY > g.worldMap.height {
+		endY = g.worldMap.height
+	}
+
+	// Only draw visible tiles
+	for y := startY; y < endY; y++ {
+		for x := startX; x < endX; x++ {
 			tile := g.worldMap.tiles[layer][y][x]
-			if tile == 0 && layer == LayerBase {
+			if tile == 0 && layer > LayerBase {
 				continue // Skip empty tiles in overlay layers
 			}
 
@@ -649,7 +718,15 @@ func (g *Game) drawMapLayer(screen *ebiten.Image, layer int) {
 				continue // Skip drawing if empty
 			}
 
-			vector.DrawFilledRect(screen, float32(x*tileSize), float32(y*tileSize), tileSize, tileSize, tileColor, true)
+			vector.DrawFilledRect(
+				screen,
+				float32(x*tileSize)-g.camera.x,
+				float32(y*tileSize)-g.camera.y,
+				tileSize,
+				tileSize,
+				tileColor,
+				true,
+			)
 		}
 	}
 }
