@@ -218,11 +218,10 @@ func NewGame() *Game {
 	return game
 }
 
-// Initialize a map with layers, including bridges over water
+// Initialize a map with layers, including more realistic water bodies and bridges
 func (g *Game) initMap() {
 	width, height := 20, 15
 	g.worldMap = Map{
-		// tiles:        make([][][]int, LayerCount),
 		width:        width,
 		height:       height,
 		grassTiles:   make(map[string]bool),
@@ -235,83 +234,383 @@ func (g *Game) initMap() {
 		g.worldMap.tiles[layer] = make([][]int, height)
 		for y := 0; y < height; y++ {
 			g.worldMap.tiles[layer][y] = make([]int, width)
-		}
-	}
+			for x := 0; x < width; x++ {
+				g.worldMap.tiles[layer][y][x] = TileGrass // Default to grass
 
-	// Generate base layer with grass, paths, and water
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			// Main landscape features
-			var tileType int
-			randVal := rand.Float32()
-
-			if randVal < 0.6 {
-				tileType = TileGrass
 				// Mark as grass tile for encounter checks
 				key := formatCoord(x, y)
 				g.worldMap.grassTiles[key] = true
-			} else if randVal < 0.85 {
-				tileType = TilePath
-			} else {
-				tileType = TileWater
-				// Add water to collision map
-				key := formatCoord(x, y)
-				g.worldMap.collisionMap[key] = true
 			}
-
-			g.worldMap.tiles[LayerBase][y][x] = tileType
 		}
 	}
 
-	// Add mountains (impassable)
-	for i := 0; i < width*height/20; i++ {
-		mountainX := rand.Intn(width-2) + 1
-		mountainY := rand.Intn(height-2) + 1
+	// Generate realistic water bodies using cellular automata
+	g.generateWaterBodies(width, height)
 
-		// Create small mountain clusters
-		for dy := -1; dy <= 1; dy++ {
-			for dx := -1; dx <= 1; dx++ {
-				if rand.Float32() < 0.7 {
-					nx, ny := mountainX+dx, mountainY+dy
-					if nx >= 0 && nx < width && ny >= 0 && ny < height {
-						g.worldMap.tiles[LayerBase][ny][nx] = TileMountain
-						// Add mountain to collision map
-						key := formatCoord(nx, ny)
-						g.worldMap.collisionMap[key] = true
+	// Generate paths connecting different areas
+	g.generatePaths(width, height)
+
+	// Place mountains in clusters away from water
+	g.generateMountains(width, height)
+
+	// Add bridges at strategic locations
+	g.placeBridges(width, height)
+}
+
+// generateWaterBodies creates realistic water features using cellular automata
+func (g *Game) generateWaterBodies(width, height int) {
+	// Initialize water cells randomly (about 30% of tiles)
+	waterMap := make([][]bool, height)
+	for y := 0; y < height; y++ {
+		waterMap[y] = make([]bool, width)
+		for x := 0; x < width; x++ {
+			if rand.Float32() < 0.3 {
+				waterMap[y][x] = true
+			}
+		}
+	}
+
+	// Run cellular automata iterations to form natural-looking water bodies
+	for i := 0; i < 4; i++ {
+		newWaterMap := make([][]bool, height)
+		for y := 0; y < height; y++ {
+			newWaterMap[y] = make([]bool, width)
+			for x := 0; x < width; x++ {
+				// Count water neighbors (8-way)
+				waterNeighbors := 0
+				for dy := -1; dy <= 1; dy++ {
+					for dx := -1; dx <= 1; dx++ {
+						nx, ny := x+dx, y+dy
+						if nx >= 0 && nx < width && ny >= 0 && ny < height && waterMap[ny][nx] {
+							waterNeighbors++
+						}
 					}
+				}
+
+				// Apply cellular automata rules:
+				// - If a cell has 4+ water neighbors, it becomes water
+				// - If a cell has 3 or fewer water neighbors, it becomes land
+				newWaterMap[y][x] = waterNeighbors >= 4
+			}
+		}
+		waterMap = newWaterMap
+	}
+
+	// Create rivers by drawing lines between water bodies
+	riverOrigins := []struct{ x, y int }{}
+
+	// Find potential river origins (water near land)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			if waterMap[y][x] {
+				hasLandNeighbor := false
+				for dy := -1; dy <= 1; dy++ {
+					for dx := -1; dx <= 1; dx++ {
+						nx, ny := x+dx, y+dy
+						if nx >= 0 && nx < width && ny >= 0 && ny < height && !waterMap[ny][nx] {
+							hasLandNeighbor = true
+							break
+						}
+					}
+					if hasLandNeighbor {
+						break
+					}
+				}
+				if hasLandNeighbor && rand.Float32() < 0.2 {
+					riverOrigins = append(riverOrigins, struct{ x, y int }{x, y})
 				}
 			}
 		}
 	}
 
-	// Add bridges over water
-	// Horizontal bridge
-	bridgeX, bridgeY := width/2-3, height/2
-	for i := 0; i < 6; i++ {
-		x := bridgeX + i
-		// Make sure we're building bridge over water
-		if g.worldMap.tiles[LayerBase][bridgeY][x] == TileWater {
-			g.worldMap.tiles[LayerOverlay][bridgeY][x] = TileBridge
-			key := formatCoord(x, bridgeY)
-			g.worldMap.bridgeTiles[key] = true
-			// Remove from collision map since bridge is passable
-			delete(g.worldMap.collisionMap, key)
+	// Draw rivers from origins
+	for _, origin := range riverOrigins {
+		if len(riverOrigins) <= 2 || rand.Float32() < 0.5 {
+			// Create river path
+			x, y := origin.x, origin.y
+			length := rand.Intn(8) + 3
+			dx, dy := 0, 0
+
+			// Choose a consistent direction for the river
+			if rand.Float32() < 0.5 {
+				dx = rand.Intn(3) - 1 // -1, 0, or 1
+				if dx == 0 {
+					dy = rand.Intn(2)*2 - 1 // -1 or 1
+				}
+			} else {
+				dy = rand.Intn(3) - 1 // -1, 0, or 1
+				if dy == 0 {
+					dx = rand.Intn(2)*2 - 1 // -1 or 1
+				}
+			}
+
+			// Draw the river
+			for i := 0; i < length; i++ {
+				nx, ny := x+dx, y+dy
+				if nx < 0 || nx >= width || ny < 0 || ny >= height {
+					break
+				}
+
+				waterMap[ny][nx] = true
+
+				// Slight chance of changing direction
+				if rand.Float32() < 0.2 {
+					if rand.Float32() < 0.5 {
+						dx += rand.Intn(3) - 1
+						if dx < -1 {
+							dx = -1
+						} else if dx > 1 {
+							dx = 1
+						}
+					} else {
+						dy += rand.Intn(3) - 1
+						if dy < -1 {
+							dy = -1
+						} else if dy > 1 {
+							dy = 1
+						}
+					}
+
+					// Ensure we have direction
+					if dx == 0 && dy == 0 {
+						if rand.Float32() < 0.5 {
+							dx = rand.Intn(2)*2 - 1
+						} else {
+							dy = rand.Intn(2)*2 - 1
+						}
+					}
+				}
+
+				x, y = nx, ny
+			}
 		}
 	}
 
-	// Vertical bridge
-	bridgeX, bridgeY = width/4, height/2-3
-	for i := 0; i < 6; i++ {
-		y := bridgeY + i
-		// Make sure we're building bridge over water
-		if y < height && g.worldMap.tiles[LayerBase][y][bridgeX] == TileWater {
-			g.worldMap.tiles[LayerOverlay][y][bridgeX] = TileBridge
-			key := formatCoord(bridgeX, y)
-			g.worldMap.bridgeTiles[key] = true
-			// Remove from collision map since bridge is passable
-			delete(g.worldMap.collisionMap, key)
+	// Apply water map to the game map
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			if waterMap[y][x] {
+				g.worldMap.tiles[LayerBase][y][x] = TileWater
+
+				// Add water to collision map
+				key := formatCoord(x, y)
+				g.worldMap.collisionMap[key] = true
+				delete(g.worldMap.grassTiles, key)
+			}
 		}
 	}
+}
+
+// generatePaths creates paths connecting different parts of the map
+func (g *Game) generatePaths(width, height int) {
+	// Create a few random path starting points
+	pathPoints := []struct{ x, y int }{}
+
+	// Add a few starting points for paths
+	numPathPoints := rand.Intn(3) + 2
+	for i := 0; i < numPathPoints; i++ {
+		x := rand.Intn(width)
+		y := rand.Intn(height)
+		pathPoints = append(pathPoints, struct{ x, y int }{x, y})
+	}
+
+	// Connect path points with each other
+	for i := 0; i < len(pathPoints)-1; i++ {
+		start := pathPoints[i]
+		end := pathPoints[i+1]
+
+		// Simple pathfinding to connect points
+		x, y := start.x, start.y
+		for x != end.x || y != end.y {
+			if g.worldMap.tiles[LayerBase][y][x] != TileWater {
+				g.worldMap.tiles[LayerBase][y][x] = TilePath
+
+				// Remove from grass tiles for encounter checks
+				key := formatCoord(x, y)
+				delete(g.worldMap.grassTiles, key)
+			}
+
+			// Move toward end point
+			if x < end.x && rand.Float32() < 0.7 {
+				x++
+			} else if x > end.x && rand.Float32() < 0.7 {
+				x--
+			} else if y < end.y {
+				y++
+			} else if y > end.y {
+				y--
+			}
+		}
+
+		// Set final tile (if not water)
+		if g.worldMap.tiles[LayerBase][end.y][end.x] != TileWater {
+			g.worldMap.tiles[LayerBase][end.y][end.x] = TilePath
+
+			// Remove from grass tiles for encounter checks
+			key := formatCoord(end.x, end.y)
+			delete(g.worldMap.grassTiles, key)
+		}
+	}
+}
+
+// generateMountains places mountain clusters in sensible locations
+func (g *Game) generateMountains(width, height int) {
+	// Add mountains (impassable) in clusters
+	numMountainClusters := rand.Intn(3) + 1
+	for cluster := 0; cluster < numMountainClusters; cluster++ {
+		// Find a spot for mountains (preferably away from water)
+		var mountainX, mountainY int
+		attempts := 0
+		validSpot := false
+
+		for !validSpot && attempts < 20 {
+			mountainX = rand.Intn(width-4) + 2
+			mountainY = rand.Intn(height-4) + 2
+
+			// Check if the area has minimal water
+			waterCount := 0
+			for dy := -2; dy <= 2; dy++ {
+				for dx := -2; dx <= 2; dx++ {
+					nx, ny := mountainX+dx, mountainY+dy
+					if nx >= 0 && nx < width && ny >= 0 && ny < height &&
+						g.worldMap.tiles[LayerBase][ny][nx] == TileWater {
+						waterCount++
+					}
+				}
+			}
+
+			validSpot = waterCount <= 2
+			attempts++
+		}
+
+		// Create mountain cluster
+		clusterSize := rand.Intn(8) + 5
+		for i := 0; i < clusterSize; i++ {
+			// Mountains form in connected patterns
+			offsetX := rand.Intn(5) - 2
+			offsetY := rand.Intn(5) - 2
+
+			nx, ny := mountainX+offsetX, mountainY+offsetY
+			if nx >= 0 && nx < width && ny >= 0 && ny < height &&
+				g.worldMap.tiles[LayerBase][ny][nx] != TileWater {
+				g.worldMap.tiles[LayerBase][ny][nx] = TileMountain
+
+				// Add mountain to collision map
+				key := formatCoord(nx, ny)
+				g.worldMap.collisionMap[key] = true
+				delete(g.worldMap.grassTiles, key)
+			}
+		}
+	}
+}
+
+// placeBridges adds bridges at strategic locations over water
+func (g *Game) placeBridges(width, height int) {
+	// Find potential bridge locations by looking for water bodies that separate land
+	bridgeCandidates := []struct {
+		x, y      int
+		direction int // 0 for horizontal, 1 for vertical
+	}{}
+
+	// Find horizontal bridge candidates
+	for y := 1; y < height-1; y++ {
+		for x := 1; x < width-2; x++ {
+			// Look for patterns like: land - water - water - land
+			if g.worldMap.tiles[LayerBase][y][x-1] != TileWater &&
+				g.worldMap.tiles[LayerBase][y][x] == TileWater &&
+				g.worldMap.tiles[LayerBase][y][x+1] == TileWater {
+
+				// Find the end of the water stretch
+				endX := x + 1
+				for endX < width-1 && g.worldMap.tiles[LayerBase][y][endX] == TileWater {
+					endX++
+				}
+
+				// If we found land on the other side and water stretch isn't too long
+				if endX < width && g.worldMap.tiles[LayerBase][y][endX] != TileWater && endX-x <= 5 {
+					bridgeCandidates = append(bridgeCandidates, struct {
+						x, y, direction int
+					}{x, y, 0})
+				}
+			}
+		}
+	}
+
+	// Find vertical bridge candidates
+	for x := 1; x < width-1; x++ {
+		for y := 1; y < height-2; y++ {
+			// Look for patterns like: land - water - water - land
+			if g.worldMap.tiles[LayerBase][y-1][x] != TileWater &&
+				g.worldMap.tiles[LayerBase][y][x] == TileWater &&
+				g.worldMap.tiles[LayerBase][y+1][x] == TileWater {
+
+				// Find the end of the water stretch
+				endY := y + 1
+				for endY < height-1 && g.worldMap.tiles[LayerBase][endY][x] == TileWater {
+					endY++
+				}
+
+				// If we found land on the other side and water stretch isn't too long
+				if endY < height && g.worldMap.tiles[LayerBase][endY][x] != TileWater && endY-y <= 5 {
+					bridgeCandidates = append(bridgeCandidates, struct {
+						x, y, direction int
+					}{x, y, 1})
+				}
+			}
+		}
+	}
+
+	// Place up to 3 bridges (if we have that many candidates)
+	numBridges := min(len(bridgeCandidates), 3)
+	if numBridges > 0 {
+		// Shuffle candidates to randomize selection
+		for i := range bridgeCandidates {
+			j := rand.Intn(i + 1)
+			bridgeCandidates[i], bridgeCandidates[j] = bridgeCandidates[j], bridgeCandidates[i]
+		}
+
+		for i := 0; i < numBridges; i++ {
+			bridge := bridgeCandidates[i]
+
+			if bridge.direction == 0 { // Horizontal bridge
+				// Find end of water
+				endX := bridge.x
+				for endX < width && g.worldMap.tiles[LayerBase][bridge.y][endX] == TileWater {
+					endX++
+				}
+
+				// Place bridge tiles over water
+				for x := bridge.x; x < endX; x++ {
+					g.worldMap.tiles[LayerOverlay][bridge.y][x] = TileBridge
+					key := formatCoord(x, bridge.y)
+					g.worldMap.bridgeTiles[key] = true
+					delete(g.worldMap.collisionMap, key)
+				}
+			} else { // Vertical bridge
+				// Find end of water
+				endY := bridge.y
+				for endY < height && g.worldMap.tiles[LayerBase][endY][bridge.x] == TileWater {
+					endY++
+				}
+
+				// Place bridge tiles over water
+				for y := bridge.y; y < endY; y++ {
+					g.worldMap.tiles[LayerOverlay][y][bridge.x] = TileBridge
+					key := formatCoord(bridge.x, y)
+					g.worldMap.bridgeTiles[key] = true
+					delete(g.worldMap.collisionMap, key)
+				}
+			}
+		}
+	}
+}
+
+// min returns the smaller of a and b
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Helper function to format coordinates for the various tile maps
