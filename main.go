@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"log"
 	"math/rand"
+	"sort"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
@@ -510,6 +511,7 @@ func (g *Game) placeBridges(width, height int) {
 	bridgeCandidates := []struct {
 		x, y      int
 		direction int // 0 for horizontal, 1 for vertical
+		length    int // Length of water to cross
 	}{}
 
 	// Find horizontal bridge candidates
@@ -517,20 +519,56 @@ func (g *Game) placeBridges(width, height int) {
 		for x := 1; x < width-2; x++ {
 			// Look for patterns like: land - water - water - land
 			if g.worldMap.tiles[LayerBase][y][x-1] != TileWater &&
-				g.worldMap.tiles[LayerBase][y][x] == TileWater &&
-				g.worldMap.tiles[LayerBase][y][x+1] == TileWater {
+				g.worldMap.tiles[LayerBase][y][x] == TileWater {
 
 				// Find the end of the water stretch
-				endX := x + 1
+				endX := x
 				for endX < width-1 && g.worldMap.tiles[LayerBase][y][endX] == TileWater {
 					endX++
 				}
 
 				// If we found land on the other side and water stretch isn't too long
-				if endX < width && g.worldMap.tiles[LayerBase][y][endX] != TileWater && endX-x <= 5 {
-					bridgeCandidates = append(bridgeCandidates, struct {
-						x, y, direction int
-					}{x, y, 0})
+				// but also not too short (at least 2 tiles of water)
+				waterLength := endX - x
+				if endX < width &&
+					g.worldMap.tiles[LayerBase][y][endX] != TileWater &&
+					waterLength >= 2 && waterLength <= 5 {
+
+					// Check that this isn't just following the coastline
+					// by ensuring both sides are actual separate land masses
+
+					// Check left side isn't just a thin peninsula
+					leftIsSolid := false
+					if x-1 >= 0 && y-1 >= 0 && y+1 < height {
+						landCount := 0
+						if g.worldMap.tiles[LayerBase][y-1][x-1] != TileWater {
+							landCount++
+						}
+						if g.worldMap.tiles[LayerBase][y+1][x-1] != TileWater {
+							landCount++
+						}
+						leftIsSolid = landCount >= 1
+					}
+
+					// Check right side isn't just a thin peninsula
+					rightIsSolid := false
+					if endX < width && y-1 >= 0 && y+1 < height {
+						landCount := 0
+						if g.worldMap.tiles[LayerBase][y-1][endX] != TileWater {
+							landCount++
+						}
+						if g.worldMap.tiles[LayerBase][y+1][endX] != TileWater {
+							landCount++
+						}
+						rightIsSolid = landCount >= 1
+					}
+
+					// Only add if bridge connects solid land on both sides
+					if leftIsSolid && rightIsSolid {
+						bridgeCandidates = append(bridgeCandidates, struct {
+							x, y, direction, length int
+						}{x, y, 0, waterLength})
+					}
 				}
 			}
 		}
@@ -541,68 +579,191 @@ func (g *Game) placeBridges(width, height int) {
 		for y := 1; y < height-2; y++ {
 			// Look for patterns like: land - water - water - land
 			if g.worldMap.tiles[LayerBase][y-1][x] != TileWater &&
-				g.worldMap.tiles[LayerBase][y][x] == TileWater &&
-				g.worldMap.tiles[LayerBase][y+1][x] == TileWater {
+				g.worldMap.tiles[LayerBase][y][x] == TileWater {
 
 				// Find the end of the water stretch
-				endY := y + 1
+				endY := y
 				for endY < height-1 && g.worldMap.tiles[LayerBase][endY][x] == TileWater {
 					endY++
 				}
 
 				// If we found land on the other side and water stretch isn't too long
-				if endY < height && g.worldMap.tiles[LayerBase][endY][x] != TileWater && endY-y <= 5 {
-					bridgeCandidates = append(bridgeCandidates, struct {
-						x, y, direction int
-					}{x, y, 1})
+				// but also not too short (at least 2 tiles of water)
+				waterLength := endY - y
+				if endY < height &&
+					g.worldMap.tiles[LayerBase][endY][x] != TileWater &&
+					waterLength >= 2 && waterLength <= 5 {
+
+					// Check that this isn't just following the coastline
+					// by ensuring both sides are actual separate land masses
+
+					// Check top side isn't just a thin peninsula
+					topIsSolid := false
+					if y-1 >= 0 && x-1 >= 0 && x+1 < width {
+						landCount := 0
+						if g.worldMap.tiles[LayerBase][y-1][x-1] != TileWater {
+							landCount++
+						}
+						if g.worldMap.tiles[LayerBase][y-1][x+1] != TileWater {
+							landCount++
+						}
+						topIsSolid = landCount >= 1
+					}
+
+					// Check bottom side isn't just a thin peninsula
+					bottomIsSolid := false
+					if endY < height && x-1 >= 0 && x+1 < width {
+						landCount := 0
+						if g.worldMap.tiles[LayerBase][endY][x-1] != TileWater {
+							landCount++
+						}
+						if g.worldMap.tiles[LayerBase][endY][x+1] != TileWater {
+							landCount++
+						}
+						bottomIsSolid = landCount >= 1
+					}
+
+					// Only add if bridge connects solid land on both sides
+					if topIsSolid && bottomIsSolid {
+						bridgeCandidates = append(bridgeCandidates, struct {
+							x, y, direction, length int
+						}{x, y, 1, waterLength})
+					}
 				}
 			}
 		}
 	}
 
-	// Place up to 3 bridges (if we have that many candidates)
-	numBridges := min(len(bridgeCandidates), 3)
-	if numBridges > 0 {
-		// Shuffle candidates to randomize selection
-		for i := range bridgeCandidates {
-			j := rand.Intn(i + 1)
-			bridgeCandidates[i], bridgeCandidates[j] = bridgeCandidates[j], bridgeCandidates[i]
+	// Score and sort bridge candidates
+	type scoredBridge struct {
+		x, y      int
+		direction int
+		length    int
+		score     int
+	}
+
+	scoredBridges := make([]scoredBridge, 0, len(bridgeCandidates))
+	for _, bridge := range bridgeCandidates {
+		// Calculate a score based on:
+		// 1. Prefer bridges that cross larger stretches of water (but not too large)
+		// 2. Prefer bridges that are in more central map positions
+		lengthScore := bridge.length * 10
+
+		// Calculate distance from center of map
+		centerX, centerY := width/2, height/2
+		distX := abs(bridge.x - centerX)
+		distY := abs(bridge.y - centerY)
+		centralityScore := 20 - (distX + distY)
+		if centralityScore < 0 {
+			centralityScore = 0
 		}
 
-		for i := 0; i < numBridges; i++ {
-			bridge := bridgeCandidates[i]
+		totalScore := lengthScore + centralityScore
 
-			if bridge.direction == 0 { // Horizontal bridge
-				// Find end of water
-				endX := bridge.x
-				for endX < width && g.worldMap.tiles[LayerBase][bridge.y][endX] == TileWater {
-					endX++
+		scoredBridges = append(scoredBridges, scoredBridge{
+			x:         bridge.x,
+			y:         bridge.y,
+			direction: bridge.direction,
+			length:    bridge.length,
+			score:     totalScore,
+		})
+	}
+
+	// Sort bridges by score (highest first)
+	sort.Slice(scoredBridges, func(i, j int) bool {
+		return scoredBridges[i].score > scoredBridges[j].score
+	})
+
+	// Place up to 3 bridges (if we have that many candidates)
+	numBridges := min(len(scoredBridges), 3)
+
+	// Keep track of bridge locations to avoid building bridges too close together
+	bridgeMap := make(map[string]bool)
+
+	// Place highest scoring bridges
+	bridgesPlaced := 0
+	for i := 0; i < len(scoredBridges) && bridgesPlaced < numBridges; i++ {
+		bridge := scoredBridges[i]
+
+		// Check if this bridge is too close to an existing bridge
+		tooClose := false
+
+		if bridge.direction == 0 { // Horizontal bridge
+			// Find end of water
+			endX := bridge.x
+			for endX < width && g.worldMap.tiles[LayerBase][bridge.y][endX] == TileWater {
+				endX++
+			}
+
+			// Check proximity to other bridges
+			buffer := 2 // Minimum distance between bridges
+			for y := bridge.y - buffer; y <= bridge.y+buffer; y++ {
+				for x := bridge.x - buffer; x <= endX+buffer; x++ {
+					key := formatCoord(x, y)
+					if bridgeMap[key] {
+						tooClose = true
+						break
+					}
 				}
+				if tooClose {
+					break
+				}
+			}
 
+			if !tooClose {
 				// Place bridge tiles over water
 				for x := bridge.x; x < endX; x++ {
 					g.worldMap.tiles[LayerOverlay][bridge.y][x] = TileBridge
 					key := formatCoord(x, bridge.y)
 					g.worldMap.bridgeTiles[key] = true
 					delete(g.worldMap.collisionMap, key)
+					bridgeMap[key] = true
 				}
-			} else { // Vertical bridge
-				// Find end of water
-				endY := bridge.y
-				for endY < height && g.worldMap.tiles[LayerBase][endY][bridge.x] == TileWater {
-					endY++
-				}
+				bridgesPlaced++
+			}
+		} else { // Vertical bridge
+			// Find end of water
+			endY := bridge.y
+			for endY < height && g.worldMap.tiles[LayerBase][endY][bridge.x] == TileWater {
+				endY++
+			}
 
+			// Check proximity to other bridges
+			buffer := 2 // Minimum distance between bridges
+			for y := bridge.y - buffer; y <= endY+buffer; y++ {
+				for x := bridge.x - buffer; x <= bridge.x+buffer; x++ {
+					key := formatCoord(x, y)
+					if bridgeMap[key] {
+						tooClose = true
+						break
+					}
+				}
+				if tooClose {
+					break
+				}
+			}
+
+			if !tooClose {
 				// Place bridge tiles over water
 				for y := bridge.y; y < endY; y++ {
 					g.worldMap.tiles[LayerOverlay][y][bridge.x] = TileBridge
 					key := formatCoord(bridge.x, y)
 					g.worldMap.bridgeTiles[key] = true
 					delete(g.worldMap.collisionMap, key)
+					bridgeMap[key] = true
 				}
+				bridgesPlaced++
 			}
 		}
 	}
+}
+
+// Helper function for absolute value
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // min returns the smaller of a and b
